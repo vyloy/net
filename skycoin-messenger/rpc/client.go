@@ -2,7 +2,7 @@ package rpc
 
 import (
 	"sync"
-	"log"
+	log "github.com/sirupsen/logrus"
 	"github.com/skycoin/net/skycoin-messenger/msg"
 	"github.com/skycoin/net/skycoin-messenger/factory"
 )
@@ -31,14 +31,13 @@ func (c *Client) SetConnection(connection *factory.Connection) {
 	c.Unlock()
 }
 
-func (c *Client) PushLoop(conn *factory.Connection, data []byte) {
+func (c *Client) PushLoop(conn *factory.Connection) {
 	defer func() {
 		if err := recover(); err != nil {
 			log.Printf("PushLoop recovered err %v", err)
 		}
 	}()
-	push := &msg.PushMsg{PublicKey: conn.GetKey().Hex(), Msg: string(data)}
-	c.push <- *push
+	push := &msg.PushMsg{PublicKey: conn.GetKey().Hex()}
 	for {
 		select {
 		case m, ok := <-conn.GetChanIn():

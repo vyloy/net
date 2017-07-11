@@ -4,15 +4,14 @@ import (
 	"time"
 	"github.com/skycoin/net/conn"
 	"net"
-	"log"
 )
 
 type ClientTCPConn struct {
-	*conn.TCPConn
+	conn.TCPConn
 }
 
 func NewClientTCPConn(c net.Conn) *ClientTCPConn {
-	return &ClientTCPConn{&conn.TCPConn{TcpConn: c, In: make(chan []byte), Out: make(chan []byte), ConnCommonFields:conn.NewConnCommonFileds()}}
+	return &ClientTCPConn{conn.TCPConn{TcpConn: c, In: make(chan []byte), Out: make(chan []byte), ConnCommonFields:conn.NewConnCommonFileds()}}
 }
 
 func (c *ClientTCPConn) WriteLoop() (err error) {
@@ -26,20 +25,20 @@ func (c *ClientTCPConn) WriteLoop() (err error) {
 	for {
 		select {
 		case <-ticker.C:
-			log.Println("ping out")
+			c.CTXLogger.Debug("ping out")
 			err := c.Ping()
 			if err != nil {
 				return err
 			}
 		case m, ok := <-c.Out:
 			if !ok {
-				log.Println("conn closed")
+				c.CTXLogger.Debug("conn closed")
 				return nil
 			}
-			log.Printf("msg Out %x", m)
+			c.CTXLogger.Debugf("msg Out %x", m)
 			err := c.Write(m)
 			if err != nil {
-				log.Printf("write msg is failed %v", err)
+				c.CTXLogger.Debugf("write msg is failed %v", err)
 				return err
 			}
 		}
