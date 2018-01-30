@@ -130,10 +130,7 @@ func (c *TCPConn) writeDirectly(bytes []byte) (err error) {
 func (c *TCPConn) WriteBytes(bytes []byte) (err error) {
 	crypto := c.GetCrypto()
 	if crypto != nil {
-		err = crypto.Encrypt(bytes)
-		if err != nil {
-			return
-		}
+		crypto.Encrypt(bytes)
 	}
 	err = c.writeDirectly(bytes)
 	return

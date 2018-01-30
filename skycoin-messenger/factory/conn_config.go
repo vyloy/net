@@ -30,6 +30,8 @@ type ConnConfig struct {
 
 	TargetKey cipher.PubKey
 
+	UseInitCallback bool
+
 	// callbacks
 
 	FindServiceNodesByKeysCallback func(resp *QueryResp)

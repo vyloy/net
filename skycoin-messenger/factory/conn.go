@@ -1,7 +1,6 @@
 package factory
 
 import (
-	"crypto/aes"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -637,25 +636,4 @@ func (c *Connection) GetAppFeedback() *AppFeedback {
 		return nil
 	}
 	return v
-}
-
-func (c *Connection) SetCrypto(pk cipher.PubKey, sk cipher.SecKey, target cipher.PubKey, iv []byte) (err error) {
-	c.fieldsMutex.Lock()
-	defer c.fieldsMutex.Unlock()
-	if c.Connection.GetCrypto() != nil {
-		return
-	}
-	crypto := conn.NewCrypto(pk, sk)
-	err = crypto.SetTargetKey(target)
-	if err != nil {
-		return
-	}
-	if len(iv) == aes.BlockSize {
-		err = crypto.Init(iv)
-		if err != nil {
-			return
-		}
-	}
-	c.Connection.SetCrypto(crypto)
-	return
 }

@@ -20,6 +20,9 @@ type UDPFactory struct {
 	udpConnMap      map[string]*Connection
 
 	stopGC chan struct{}
+
+	// init callback
+	InitCallback func(connection *Connection)
 }
 
 func NewUDPFactory() *UDPFactory {
@@ -80,15 +83,18 @@ func (factory *UDPFactory) createConn(c *net.UDPConn, addr *net.UDPAddr) *conn.U
 	udpConn.SetStatusToConnected()
 	connection := newConnection(udpConn, factory)
 	factory.udpConnMap[addr.String()] = connection
-	factory.udpConnMapMutex.Unlock()
 
 	connection.SetContextLogger(connection.GetContextLogger().WithField("type", "udp").WithField("addr", addr.String()))
+	if factory.InitCallback != nil {
+		factory.InitCallback(connection)
+	}
+	factory.udpConnMapMutex.Unlock()
 	factory.AddAcceptedConn(connection)
 	go factory.AcceptedCallback(connection)
 	return udpConn
 }
 
-func (factory *UDPFactory) createConnAfterListen(addr *net.UDPAddr) (*Connection, bool) {
+func (factory *UDPFactory) createConnAfterListen(addr *net.UDPAddr, init bool) (*Connection, bool) {
 	factory.udpConnMapMutex.Lock()
 	if cc, ok := factory.udpConnMap[addr.String()]; ok {
 		factory.udpConnMapMutex.Unlock()
@@ -104,6 +110,9 @@ func (factory *UDPFactory) createConnAfterListen(addr *net.UDPAddr) (*Connection
 	udpConn.SetStatusToConnected()
 	connection := newConnection(udpConn, factory)
 	factory.udpConnMap[addr.String()] = connection
+	if init && factory.InitCallback != nil {
+		factory.InitCallback(connection)
+	}
 	factory.udpConnMapMutex.Unlock()
 	factory.AddAcceptedConn(connection)
 	return connection, true
@@ -160,7 +169,20 @@ func (factory *UDPFactory) ConnectAfterListen(address string) (conn *Connection,
 	if err != nil {
 		return
 	}
-	conn, create := factory.createConnAfterListen(ra)
+	conn, create := factory.createConnAfterListen(ra, true)
+	if !create {
+		return nil, nil
+	}
+	conn.SetContextLogger(conn.GetContextLogger().WithField("type", "udpe").WithField("addr", address))
+	return
+}
+
+func (factory *UDPFactory) ConnectAfterListenWithoutInit(address string) (conn *Connection, err error) {
+	ra, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		return
+	}
+	conn, create := factory.createConnAfterListen(ra, false)
 	if !create {
 		return nil, nil
 	}

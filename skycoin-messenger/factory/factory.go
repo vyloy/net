@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	log "github.com/sirupsen/logrus"
+	"github.com/skycoin/net/conn"
 	"github.com/skycoin/net/factory"
 	"github.com/skycoin/skycoin/src/cipher"
 	"io/ioutil"
@@ -31,6 +32,9 @@ type MessengerFactory struct {
 	Parent *MessengerFactory
 	// on accepted callback
 	OnAcceptedUDPCallback func(connection *Connection)
+
+	// on init callback
+	OnInitCallback func(connection *factory.Connection)
 
 	fieldsMutex sync.RWMutex
 }
@@ -62,27 +66,29 @@ func (f *MessengerFactory) Listen(address string) (err error) {
 
 func (f *MessengerFactory) acceptedUDPCallback(connection *factory.Connection) {
 	var err error
-	conn, ok := connection.RealObject.(*Connection)
+	c, ok := connection.RealObject.(*Connection)
 	if !ok {
-		conn = newUDPServerConnection(connection, f)
+		c = newUDPServerConnection(connection, f)
 	}
-	conn.SetContextLogger(conn.GetContextLogger().WithField("app", "messenger"))
-	//defer func() {
-	//	if e := recover(); e != nil {
-	//		conn.GetContextLogger().Errorf("acceptedUDPCallback recover err %v", e)
-	//	}
-	//	if err != nil {
-	//		conn.GetContextLogger().Errorf("acceptedUDPCallback err %v", err)
-	//	}
-	//	conn.Close()
-	//}()
+	c.SetContextLogger(c.GetContextLogger().WithField("app", "messenger"))
+	if !conn.DEV {
+		defer func() {
+			if e := recover(); e != nil {
+				c.GetContextLogger().Errorf("acceptedUDPCallback recover err %v", e)
+			}
+			if err != nil {
+				c.GetContextLogger().Errorf("acceptedUDPCallback err %v", err)
+			}
+			c.Close()
+		}()
+	}
 	if f.OnAcceptedUDPCallback != nil {
-		f.OnAcceptedUDPCallback(conn)
+		f.OnAcceptedUDPCallback(c)
 	}
-	err = f.callbackLoop(conn)
+	err = f.callbackLoop(c)
 	if err == ErrDetach {
 		err = nil
-		conn.WaitForDisconnected()
+		c.WaitForDisconnected()
 	}
 }
 
@@ -148,19 +154,21 @@ func (f *MessengerFactory) callbackLoop(conn *Connection) (err error) {
 
 func (f *MessengerFactory) acceptedCallback(connection *factory.Connection) {
 	var err error
-	conn := newConnection(connection, f)
-	conn.SetContextLogger(conn.GetContextLogger().WithField("app", "messenger"))
-	defer func() {
-		if e := recover(); e != nil {
-			conn.GetContextLogger().Errorf("acceptedCallback recover err %v", e)
-		}
-		if err != nil {
-			conn.GetContextLogger().Errorf("acceptedCallback err %v", err)
-		}
-		f.discoveryUnregister(conn)
-		conn.Close()
-	}()
-	err = f.callbackLoop(conn)
+	c := newConnection(connection, f)
+	c.SetContextLogger(c.GetContextLogger().WithField("app", "messenger"))
+	if !conn.DEV {
+		defer func() {
+			if e := recover(); e != nil {
+				c.GetContextLogger().Errorf("acceptedCallback recover err %v", e)
+			}
+			if err != nil {
+				c.GetContextLogger().Errorf("acceptedCallback err %v", err)
+			}
+			f.discoveryUnregister(c)
+			c.Close()
+		}()
+	}
+	err = f.callbackLoop(c)
 }
 
 func (f *MessengerFactory) register(key cipher.PubKey, connection *Connection) {
@@ -337,6 +345,7 @@ func (f *MessengerFactory) listenForUDP() (err error) {
 	if f.udp == nil {
 		ff := factory.NewUDPFactory()
 		ff.AcceptedCallback = f.acceptedUDPCallback
+		ff.InitCallback = f.OnInitCallback
 		err = ff.Listen(":0")
 		if err != nil {
 			f.fieldsMutex.Unlock()
@@ -355,7 +364,12 @@ func (f *MessengerFactory) connectUDPWithConfig(address string, config *ConnConf
 		return
 	}
 	f.fieldsMutex.Unlock()
-	c, err := f.udp.ConnectAfterListen(address)
+	var c *factory.Connection
+	if config != nil && config.UseInitCallback {
+		c, err = f.udp.ConnectAfterListen(address)
+	} else {
+		c, err = f.udp.ConnectAfterListenWithoutInit(address)
+	}
 	if err != nil {
 		return nil, err
 	}

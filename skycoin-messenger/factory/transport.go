@@ -6,6 +6,7 @@ import (
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	cn "github.com/skycoin/net/conn"
+	"github.com/skycoin/net/factory"
 	"github.com/skycoin/skycoin/src/cipher"
 	"io"
 	"net"
@@ -70,8 +71,8 @@ func NewTransport(creator *MessengerFactory, appConn *Connection, fromNode, toNo
 	return t
 }
 
-func (t *Transport) SetOnAcceptedUDPCallback(fn func(connection *Connection)) {
-	t.factory.OnAcceptedUDPCallback = fn
+func (t *Transport) SetOnInitUDPCallback(fn func(connection *factory.Connection)) {
+	t.factory.OnInitCallback = fn
 }
 
 func (t *Transport) String() string {
@@ -103,17 +104,14 @@ func (t *Transport) clientSideConnect(address string, sc *SeedConfig, iv []byte)
 	t.connAcked = true
 	t.fieldsMutex.Unlock()
 	conn, err := t.factory.acceptUDPWithConfig(address, &ConnConfig{
-		Creator: t.creator,
+		Creator:         t.creator,
+		UseInitCallback: true,
 	})
 	if err != nil {
 		return
 	}
 	if conn == nil {
 		err = errors.New("clientSideConnect acceptUDPWithConfig return nil conn")
-		return
-	}
-	err = conn.SetCrypto(sc.publicKey, sc.secKey, t.ToNode, iv)
-	if err != nil {
 		return
 	}
 	err = conn.writeOP(OP_BUILD_APP_CONN_OK|RESP_PREFIX, &nop{})
@@ -128,17 +126,19 @@ func (t *Transport) connAck() {
 
 // Connect to node A and server app
 func (t *Transport) serverSiceConnect(address, appAddress string, sc *SeedConfig, iv []byte) (err error) {
-	conn, err := t.factory.connectUDPWithConfig(address, &ConnConfig{
+	c, err := t.factory.connectUDPWithConfig(address, &ConnConfig{
 		Creator: t.creator,
 	})
 	if err != nil {
 		return
 	}
-	err = conn.SetCrypto(sc.publicKey, sc.secKey, t.FromNode, iv)
-	if err != nil {
+	crypto := cn.NewCrypto(sc.secKey, t.FromNode, iv)
+	if crypto == nil {
+		err = errors.New("NewCrypto return nil")
 		return
 	}
-	err = conn.writeOP(OP_BUILD_APP_CONN_OK,
+	c.SetCrypto(crypto)
+	err = c.writeOP(OP_BUILD_APP_CONN_OK,
 		&buildConnResp{
 			FromNode: t.FromNode,
 			Node:     t.ToNode,
@@ -149,10 +149,10 @@ func (t *Transport) serverSiceConnect(address, appAddress string, sc *SeedConfig
 		return
 	}
 	t.fieldsMutex.Lock()
-	t.conn = conn
+	t.conn = c
 	t.fieldsMutex.Unlock()
 
-	go t.nodeReadLoop(conn, func(id uint32) net.Conn {
+	go t.nodeReadLoop(c, func(id uint32) net.Conn {
 		t.connsMutex.Lock()
 		defer t.connsMutex.Unlock()
 		appConn, ok := t.conns[id]
@@ -163,7 +163,7 @@ func (t *Transport) serverSiceConnect(address, appAddress string, sc *SeedConfig
 				return nil
 			}
 			t.conns[id] = appConn
-			go t.appReadLoop(id, appConn, conn, false)
+			go t.appReadLoop(id, appConn, c, false)
 		}
 		return appConn
 	})

@@ -4,6 +4,8 @@ import (
 	"crypto/aes"
 	"crypto/rand"
 	"fmt"
+	"github.com/skycoin/net/conn"
+	"github.com/skycoin/net/factory"
 	"github.com/skycoin/skycoin/src/cipher"
 	"io"
 	"net"
@@ -74,35 +76,40 @@ type appConn struct {
 }
 
 // run on node A
-func (req *appConn) Execute(f *MessengerFactory, conn *Connection) (r resp, err error) {
+func (req *appConn) Execute(f *MessengerFactory, c *Connection) (r resp, err error) {
 	if !f.Proxy {
 		return
 	}
 
 	f.ForEachConn(func(connection *Connection) {
 		fromNode := connection.GetKey()
-		fromApp := conn.GetKey()
+		fromApp := c.GetKey()
 		iv := make([]byte, aes.BlockSize)
 		if _, err = io.ReadFull(rand.Reader, iv); err != nil {
-			conn.GetContextLogger().Debugf("transport err %v", err)
+			c.GetContextLogger().Debugf("transport err %v", err)
 			return
 		}
-		tr := NewTransport(f, conn, fromNode, req.Node, fromApp, req.App)
-		tr.SetOnAcceptedUDPCallback(func(connection *Connection) {
+		tr := NewTransport(f, c, fromNode, req.Node, fromApp, req.App)
+		tr.SetOnInitUDPCallback(func(connection *factory.Connection) {
 			sc := f.GetDefaultSeedConfig()
 			connection.GetContextLogger().Debugf("set crypto sc %v", sc)
 			if sc == nil {
-				connection.GetContextLogger().Debugf("tr sc is nil")
+				connection.GetContextLogger().Errorf("tr sc is nil")
 			}
-			err := connection.SetCrypto(sc.publicKey, sc.secKey, req.Node, iv)
+			crypto := conn.NewCrypto(sc.secKey, req.Node, iv)
+			if crypto == nil {
+				connection.GetContextLogger().Error("NewCrypto return nil")
+				return
+			}
+			connection.SetCrypto(crypto)
 			if err != nil {
-				connection.GetContextLogger().Debugf("set crypto err %v", err)
+				connection.GetContextLogger().Errorf("set crypto err %v", err)
 			}
 		})
-		conn.GetContextLogger().Debugf("app conn create transport to %s", connection.GetRemoteAddr().String())
-		c, err := tr.ListenAndConnect(connection.GetRemoteAddr().String(), connection.GetTargetKey())
+		c.GetContextLogger().Debugf("app conn create transport to %s", connection.GetRemoteAddr().String())
+		trc, err := tr.ListenAndConnect(connection.GetRemoteAddr().String(), connection.GetTargetKey())
 		if err != nil {
-			conn.GetContextLogger().Debugf("transport err %v", err)
+			c.GetContextLogger().Debugf("transport err %v", err)
 			return
 		}
 		nodeConn := &forwardNodeConn{
@@ -112,8 +119,8 @@ func (req *appConn) Execute(f *MessengerFactory, conn *Connection) (r resp, err 
 			FromNode: fromNode,
 			Num:      iv,
 		}
-		c.writeOP(OP_FORWARD_NODE_CONN, nodeConn)
-		conn.setTransport(req.App, tr)
+		trc.writeOP(OP_FORWARD_NODE_CONN, nodeConn)
+		c.setTransport(req.App, tr)
 		tr.SetupTimeout()
 	})
 	return

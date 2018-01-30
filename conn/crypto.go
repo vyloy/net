@@ -3,85 +3,66 @@ package conn
 import (
 	"crypto/aes"
 	cipher2 "crypto/cipher"
-	"errors"
-	"fmt"
+	"crypto/des"
+	"crypto/sha512"
 	"github.com/skycoin/skycoin/src/cipher"
 	"io"
 	"sync"
-	"sync/atomic"
 )
 
 type Crypto struct {
-	key     cipher.PubKey
-	secKey  cipher.SecKey
-	target  cipher.PubKey
-	block   atomic.Value
 	es      cipher2.Stream
 	esMutex sync.Mutex
 	ds      cipher2.Stream
 	dsMutex sync.Mutex
+
+	// header
+	headerCipher cipher2.Block
 }
 
-func NewCrypto(key cipher.PubKey, secKey cipher.SecKey) *Crypto {
-	return &Crypto{
-		key:    key,
-		secKey: secKey,
-	}
-}
-
-func (c *Crypto) SetTargetKey(target cipher.PubKey) (err error) {
-	defer func() {
-		if e := recover(); e != nil {
-			err = fmt.Errorf("SetTargetKey recovered err %v", e)
-		}
-	}()
-	c.target = target
-	ecdh := cipher.ECDH(target, c.secKey)
+func NewCrypto(secKey cipher.SecKey, target cipher.PubKey, iv []byte) *Crypto {
+	ecdh := cipher.ECDH(target, secKey)
 	b, err := aes.NewCipher(ecdh)
-	c.block.Store(b)
-	return
+	if err != nil {
+		return nil
+	}
+	s1 := sha512.Sum512(append(iv, ecdh...))
+	s2 := sha512.Sum512(append(ecdh, iv...))
+	s3 := sha512.Sum512(append(iv, s2[:]...))
+	s4 := sha512.Sum512(append(ecdh, s1[:]...))
+	sum := append(s2[:], s1[:]...)
+	sum = append(sum, s3[:]...)
+	sum = append(sum, s4[:]...)
+	key := sha512.Sum512(sum)
+	crypto := &Crypto{
+		es: cipher2.NewCFBEncrypter(b, iv),
+		ds: cipher2.NewCFBDecrypter(b, iv),
+	}
+	crypto.headerCipher, err = des.NewTripleDESCipher(key[:24])
+	if err != nil {
+		return nil
+	}
+	return crypto
 }
 
-func (c *Crypto) Init(iv []byte) (err error) {
-	block := c.block.Load()
-	if block == nil {
-		err = errors.New("call SetTargetKey first")
-		return
-	}
-
-	c.esMutex.Lock()
-	c.es = cipher2.NewCFBEncrypter(block.(cipher2.Block), iv)
-	c.esMutex.Unlock()
-	c.dsMutex.Lock()
-	c.ds = cipher2.NewCFBDecrypter(block.(cipher2.Block), iv)
-	c.dsMutex.Unlock()
-	return
-}
-
-func (c *Crypto) Encrypt(data []byte) (err error) {
-	block := c.block.Load()
-	if block == nil {
-		err = errors.New("call SetTargetKey first")
-		return
-	}
-
+func (c *Crypto) Encrypt(data []byte) {
 	c.esMutex.Lock()
 	c.es.XORKeyStream(data, data)
 	c.esMutex.Unlock()
-	return
 }
 
-func (c *Crypto) Decrypt(data []byte) (err error) {
-	block := c.block.Load()
-	if block == nil {
-		err = errors.New("call SetTargetKey first")
-		return
-	}
-
+func (c *Crypto) Decrypt(data []byte) {
 	c.dsMutex.Lock()
 	c.ds.XORKeyStream(data, data)
 	c.dsMutex.Unlock()
-	return
+}
+
+func (c *Crypto) EncryptBlock(data []byte) {
+	c.headerCipher.Encrypt(data, data)
+}
+
+func (c *Crypto) DecryptBlock(data []byte) {
+	c.headerCipher.Decrypt(data, data)
 }
 
 type CryptoGetter interface {
@@ -109,6 +90,6 @@ func (cr *CryptoReader) Read(p []byte) (n int, err error) {
 	if crypto == nil {
 		return
 	}
-	err = crypto.Decrypt(p[:n])
+	crypto.Decrypt(p[:n])
 	return
 }

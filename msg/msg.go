@@ -311,6 +311,10 @@ func (msg *UDPMessage) PkgBytes() (result []byte) {
 	msg.RUnlock()
 
 	if len(result) > 0 {
+		m := result[PKG_HEADER_SIZE:]
+		m[0] = byte(msg.Type)
+		binary.BigEndian.PutUint32(m[UDP_SEQ_BEGIN:], msg.GetSeq())
+		binary.BigEndian.PutUint32(m[UDP_LEN_BEGIN:], msg.Len)
 		return
 	}
 

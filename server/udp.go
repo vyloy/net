@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"github.com/skycoin/net/conn"
 	"github.com/skycoin/net/msg"
@@ -43,8 +44,10 @@ func (c *ServerUDPConn) ReadLoop(fn func(c *net.UDPConn, addr *net.UDPAddr) *con
 	var nt = time.Time{}
 	maxBuf := make([]byte, conn.MTU)
 	for {
+		var n int
+		var addr *net.UDPAddr
 		rt = time.Now()
-		n, addr, err := c.UdpConn.ReadFromUDP(maxBuf)
+		n, addr, err = c.UdpConn.ReadFromUDP(maxBuf)
 		c.GetContextLogger().Debugf("process read udp d %s", time.Now().Sub(rt))
 		if !lst.IsZero() {
 			c.GetContextLogger().Debugf("read udp d %s", time.Now().Sub(lst))
@@ -59,19 +62,28 @@ func (c *ServerUDPConn) ReadLoop(fn func(c *net.UDPConn, addr *net.UDPAddr) *con
 					continue
 				}
 			}
-			return err
+			return
 		}
 		c.AddReceivedBytes(n)
 		pkg := maxBuf[:n]
 		cc := fn(c.UdpConn, addr)
 		m := pkg[msg.PKG_HEADER_SIZE:]
-		checksum := binary.BigEndian.Uint32(pkg[msg.PKG_CRC32_BEGIN:])
-		if checksum != crc32.ChecksumIEEE(m) {
-			c.GetContextLogger().Infof("checksum !=")
-			continue
-		}
+		cc.GetContextLogger().Debugf("in %x", m)
+		wrapForClient(cc, func() error {
+			if cc.GetCrypto() != nil {
+				cc.GetCrypto().DecryptBlock(m[0:16])
+			}
+			return nil
+		})
 
 		t := m[msg.MSG_TYPE_BEGIN]
+		if t&0x80 > 0 {
+			checksum := binary.BigEndian.Uint32(pkg[msg.PKG_CRC32_BEGIN:])
+			if checksum != crc32.ChecksumIEEE(m) {
+				cc.GetContextLogger().Infof("checksum !=")
+				continue
+			}
+		}
 		switch t {
 		case msg.TYPE_ACK:
 			at = time.Now()
@@ -85,12 +97,25 @@ func (c *ServerUDPConn) ReadLoop(fn func(c *net.UDPConn, addr *net.UDPAddr) *con
 				m[msg.PING_MSG_TYPE_BEGIN] = msg.TYPE_PONG
 				checksum := crc32.ChecksumIEEE(m)
 				binary.BigEndian.PutUint32(pkg[msg.PKG_CRC32_BEGIN:], checksum)
+				crypto := cc.GetCrypto()
+				if crypto == nil {
+					return errors.New("ping crypto == nil")
+				}
+				crypto.EncryptBlock(m)
 				cc.GetContextLogger().Debugf("pong")
-				return cc.WriteExt(pkg)
+				return cc.WriteBytes(pkg)
 			})
 		case msg.TYPE_NORMAL, msg.TYPE_FEC, msg.TYPE_SYN:
 			nt = time.Now()
 			wrapForClient(cc, func() error {
+				if cc.GetCrypto() != nil {
+					cc.GetCrypto().DecryptBlock(m[16:32])
+				}
+				cc.GetContextLogger().Debugf("%x", m)
+				checksum := binary.BigEndian.Uint32(pkg[msg.PKG_CRC32_BEGIN:])
+				if checksum != crc32.ChecksumIEEE(m) {
+					return errors.New("checksum !=")
+				}
 				return cc.Process(t, m)
 			})
 			c.GetContextLogger().Debugf("process normal d %s", time.Now().Sub(nt))
@@ -99,7 +124,7 @@ func (c *ServerUDPConn) ReadLoop(fn func(c *net.UDPConn, addr *net.UDPAddr) *con
 				return conn.ErrFin
 			})
 		default:
-			cc.GetContextLogger().Debugf("not implemented msg type %d", t)
+			cc.GetContextLogger().Debugf("not implemented msg type %d\n%x", t, m)
 			cc.SetStatusToError(fmt.Errorf("not implemented msg type %d", t))
 			cc.Close()
 			continue

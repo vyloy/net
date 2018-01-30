@@ -211,8 +211,15 @@ func (c *ConnCommonFields) WriteToChannel(channel int, bytes []byte) (err error)
 }
 
 func (c *ConnCommonFields) SetCrypto(crypto *Crypto) {
+	c.cryptoMutex.Lock()
+	if c.crypto.Load() != nil {
+		c.cryptoMutex.Unlock()
+		return
+	}
 	c.crypto.Store(crypto)
+	c.cryptoMutex.Unlock()
 	c.cryptoCond.Broadcast()
+	c.GetContextLogger().Debug("SetCrypto ok")
 }
 
 func (c *ConnCommonFields) GetCrypto() *Crypto {
